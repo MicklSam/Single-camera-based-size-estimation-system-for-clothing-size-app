@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
 
 void main() async {
@@ -38,9 +39,7 @@ class _CameraScreenState extends State<CameraScreen> {
   late Future<void> _initializeControllerFuture;
 
   final poseDetector = PoseDetector(
-    options: PoseDetectorOptions(
-      mode: PoseDetectionMode.single,
-    ),
+    options: PoseDetectorOptions(mode: PoseDetectionMode.single),
   );
 
   List<Pose>? poses;
@@ -49,7 +48,13 @@ class _CameraScreenState extends State<CameraScreen> {
   @override
   void initState() {
     super.initState();
-    _controller = CameraController(widget.camera, ResolutionPreset.medium);
+    _controller = CameraController(
+      widget.camera,
+      ResolutionPreset.high,
+      enableAudio: false,
+      imageFormatGroup: ImageFormatGroup.jpeg,
+    );
+    _controller.lockCaptureOrientation(DeviceOrientation.portraitUp);
     _initializeControllerFuture = _controller.initialize();
   }
 
@@ -80,10 +85,13 @@ class _CameraScreenState extends State<CameraScreen> {
     final landmarks = pose.landmarks;
 
     return Column(
-      children: landmarks.entries.map((entry) {
-        final point = entry.value;
-        return Text('${entry.key}: (${point.x.toStringAsFixed(1)}, ${point.y.toStringAsFixed(1)})');
-      }).toList(),
+      children:
+          landmarks.entries.map((entry) {
+            final point = entry.value;
+            return Text(
+              '${entry.key}: (${point.x.toStringAsFixed(1)}, ${point.y.toStringAsFixed(1)})',
+            );
+          }).toList(),
     );
   }
 
@@ -91,34 +99,64 @@ class _CameraScreenState extends State<CameraScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('كشف وضعية الجسم')),
-      body: Column(
-        children: [
-          FutureBuilder<void>(
-            future: _initializeControllerFuture,
-            builder: (context, snapshot) {
-              if (snapshot.connectionState == ConnectionState.done) {
-                return AspectRatio(
-                    aspectRatio: _controller.value.aspectRatio,
-                    child: CameraPreview(_controller));
-              } else {
-                return const Center(child: CircularProgressIndicator());
-              }
-            },
-          ),
-          ElevatedButton(
-            onPressed: () async {
-              try {
-                await _initializeControllerFuture;
-                final image = await _controller.takePicture();
-                await _processImage(image);
-              } catch (e) {
-                debugPrint('Error: $e');
-              }
-            },
-            child: const Text('التقط صورة وحلل'),
-          ),
-          Expanded(child: SingleChildScrollView(child: _buildPosesInfo())),
-        ],
+      body: SafeArea(
+        child: Column(
+          children: [
+            Expanded(
+              flex: 3,
+              child: FutureBuilder<void>(
+                future: _initializeControllerFuture,
+                builder: (context, snapshot) {
+                  if (snapshot.connectionState == ConnectionState.done) {
+                    return LayoutBuilder(
+                      builder: (context, constraints) {
+                        double width = constraints.maxWidth;
+                        double height = width * 4 / 3;
+
+                        if (height > constraints.maxHeight) {
+                          height = constraints.maxHeight;
+                          width = height * 3 / 4;
+                        }
+
+                        return Center(
+                          child: SizedBox(
+                            width: width,
+                            height: height,
+                            child: CameraPreview(_controller),
+                          ),
+                        );
+                      },
+                    );
+                  } else {
+                    return const Center(child: CircularProgressIndicator());
+                  }
+                },
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.all(8.0),
+              child: ElevatedButton(
+                onPressed: () async {
+                  try {
+                    await _initializeControllerFuture;
+                    final image = await _controller.takePicture();
+                    await _processImage(image);
+                  } catch (e) {
+                    debugPrint('Error: $e');
+                  }
+                },
+                child: const Text('التقط صورة وحلل'),
+              ),
+            ),
+            Expanded(
+              flex: 2,
+              child: Container(
+                padding: const EdgeInsets.all(8.0),
+                child: SingleChildScrollView(child: _buildPosesInfo()),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
