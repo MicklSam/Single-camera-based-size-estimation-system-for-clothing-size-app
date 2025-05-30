@@ -1,9 +1,11 @@
 import 'dart:math';
-
+import 'dart:io';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:path/path.dart' as path;
+import 'pose_detector.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -50,11 +52,7 @@ class CameraScreen extends StatefulWidget {
 class _CameraScreenState extends State<CameraScreen> {
   late CameraController _controller;
   late Future<void> _initializeControllerFuture;
-
-  final poseDetector = PoseDetector(
-    options: PoseDetectorOptions(mode: PoseDetectionMode.single),
-  );
-
+  final _poseDetector = PoseDetector();
   List<Pose>? poses;
   bool isProcessing = false;
   Map<String, String> clothingSizes = {};
@@ -69,6 +67,7 @@ class _CameraScreenState extends State<CameraScreen> {
   @override
   void initState() {
     super.initState();
+    _initializeDetector();
     _controller = CameraController(
       widget.camera,
       ResolutionPreset.medium,
@@ -82,10 +81,18 @@ class _CameraScreenState extends State<CameraScreen> {
     weightController.text = userWeight.toString();
   }
 
+  Future<void> _initializeDetector() async {
+    try {
+      await _poseDetector.initialize();
+    } catch (e) {
+      debugPrint('Error initializing pose detector: $e');
+    }
+  }
+
   @override
   void dispose() {
     _controller.dispose();
-    poseDetector.close();
+    _poseDetector.close();
     heightController.dispose();
     weightController.dispose();
     super.dispose();
@@ -99,14 +106,26 @@ class _CameraScreenState extends State<CameraScreen> {
     });
 
     try {
-      final inputImage = InputImage.fromFilePath(imageFile.path);
-      poses = await poseDetector.processImage(inputImage);
+      final poseResults = await _poseDetector.detectPose(imageFile.path);
+      poses = poseResults.map((p) => Pose.fromJson(p)).toList();
 
       if (poses != null && poses!.isNotEmpty) {
-        final measurements = _calculateBodyMeasurements(poses!.first);
-        _determineClothingSizes(measurements);
+        try {
+          final measurements = _calculateBodyMeasurements(poses!.first);
+          _determineClothingSizes(measurements);
+        } catch (e) {
+          _showError(
+            'لم نتمكن من تحديد جميع نقاط الجسم. يرجى المحاولة مرة أخرى في وضع مختلف.',
+          );
+          debugPrint('Error calculating measurements: $e');
+        }
+      } else {
+        _showError(
+          'لم يتم العثور على شخص في الصورة. يرجى التأكد من ظهور كامل جسمك في الإطار.',
+        );
       }
     } catch (e) {
+      _showError('حدث خطأ أثناء معالجة الصورة. يرجى المحاولة مرة أخرى.');
       debugPrint('Error processing image: $e');
     } finally {
       setState(() {
@@ -120,32 +139,45 @@ class _CameraScreenState extends State<CameraScreen> {
   }
 
   Map<String, double> _calculateBodyMeasurements(Pose pose) {
-    final landmarks = pose.landmarks;
+    final leftShoulder = pose.getLandmark(PoseLandmarkType.leftShoulder);
+    final rightShoulder = pose.getLandmark(PoseLandmarkType.rightShoulder);
+    final leftHip = pose.getLandmark(PoseLandmarkType.leftHip);
+    final rightHip = pose.getLandmark(PoseLandmarkType.rightHip);
+    final leftElbow = pose.getLandmark(PoseLandmarkType.leftElbow);
+    final rightElbow = pose.getLandmark(PoseLandmarkType.rightElbow);
+    final leftWrist = pose.getLandmark(PoseLandmarkType.leftWrist);
+    final rightWrist = pose.getLandmark(PoseLandmarkType.rightWrist);
+    final leftKnee = pose.getLandmark(PoseLandmarkType.leftKnee);
+    final rightKnee = pose.getLandmark(PoseLandmarkType.rightKnee);
+    final leftAnkle = pose.getLandmark(PoseLandmarkType.leftAnkle);
+    final rightAnkle = pose.getLandmark(PoseLandmarkType.rightAnkle);
+    final nose = pose.getLandmark(PoseLandmarkType.nose);
+    final leftHeel = pose.getLandmark(PoseLandmarkType.leftHeel);
+    final rightHeel = pose.getLandmark(PoseLandmarkType.rightHeel);
 
-    final leftShoulder = landmarks[PoseLandmarkType.leftShoulder]!;
-    final rightShoulder = landmarks[PoseLandmarkType.rightShoulder]!;
-    final leftHip = landmarks[PoseLandmarkType.leftHip]!;
-    final rightHip = landmarks[PoseLandmarkType.rightHip]!;
-    final leftElbow = landmarks[PoseLandmarkType.leftElbow]!;
-    final rightElbow = landmarks[PoseLandmarkType.rightElbow]!;
-    final leftWrist = landmarks[PoseLandmarkType.leftWrist]!;
-    final rightWrist = landmarks[PoseLandmarkType.rightWrist]!;
-    final leftKnee = landmarks[PoseLandmarkType.leftKnee]!;
-    final rightKnee = landmarks[PoseLandmarkType.rightKnee]!;
-    final leftAnkle = landmarks[PoseLandmarkType.leftAnkle]!;
-    final rightAnkle = landmarks[PoseLandmarkType.rightAnkle]!;
-    final nose = landmarks[PoseLandmarkType.nose]!;
-    final leftHeel = landmarks[PoseLandmarkType.leftHeel]!;
-    final rightHeel = landmarks[PoseLandmarkType.rightHeel]!;
+    if (leftShoulder == null ||
+        rightShoulder == null ||
+        leftHip == null ||
+        rightHip == null ||
+        leftElbow == null ||
+        rightElbow == null ||
+        leftWrist == null ||
+        rightWrist == null ||
+        leftKnee == null ||
+        rightKnee == null ||
+        leftAnkle == null ||
+        rightAnkle == null ||
+        nose == null ||
+        leftHeel == null ||
+        rightHeel == null) {
+      throw Exception('Missing required landmarks');
+    }
 
-    // تحسين حساب الطول الكلي باستخدام جميع النقاط المتاحة
     double heightPixels = _calculateTotalHeight(nose, leftHeel, rightHeel);
     conversionFactor = userHeight / heightPixels;
 
-    // حساب عرض الكتفين بدقة أكبر
     double shoulderWidth = _calculateShoulderWidth(leftShoulder, rightShoulder);
 
-    // حساب محيط الصدر باستخدام نموذج متقدم
     double chestWidth = _calculateChestWidth(
       leftShoulder,
       rightShoulder,
@@ -162,7 +194,6 @@ class _CameraScreenState extends State<CameraScreen> {
       chestDepth,
     );
 
-    // حساب محيط الخصر بدقة
     double waistWidth = _calculateWaistWidth(leftHip, rightHip);
     double waistDepth = _calculateWaistDepth(
       waistWidth,
@@ -174,7 +205,6 @@ class _CameraScreenState extends State<CameraScreen> {
       waistDepth,
     );
 
-    // حساب أطوال الأطراف بدقة
     double armLength = _calculateArmLength(
       leftShoulder,
       leftElbow,
@@ -192,23 +222,21 @@ class _CameraScreenState extends State<CameraScreen> {
       rightAnkle,
     );
 
-    // حساب محيط الرقبة
     double neckCircumference = _calculateNeckCircumference(
       leftShoulder,
       rightShoulder,
       nose,
     );
 
-    // تطبيق التصحيحات والمعايرة
     Map<String, double> measurements = {
       'shoulderWidth': shoulderWidth * conversionFactor,
       'chestCircumference': chestCircumference * conversionFactor,
       'waistCircumference': waistCircumference * conversionFactor,
       'armLength': armLength * conversionFactor,
       'legLength': legLength * conversionFactor,
-      'hipWidth': waistWidth * 1.4 * conversionFactor, // تقدير محيط الورك
+      'hipWidth': waistWidth * 1.4 * conversionFactor,
       'neckCircumference': neckCircumference * conversionFactor,
-      'inseam': legLength * 0.67 * conversionFactor, // تقدير طول الساق الداخلي
+      'inseam': legLength * 0.67 * conversionFactor,
     };
 
     _applyBodyTypeCorrections(measurements);
@@ -229,8 +257,7 @@ class _CameraScreenState extends State<CameraScreen> {
     PoseLandmark leftShoulder,
     PoseLandmark rightShoulder,
   ) {
-    return _distanceBetween(leftShoulder, rightShoulder) *
-        1.15; // تصحيح للانحناء
+    return _distanceBetween(leftShoulder, rightShoulder) * 1.15;
   }
 
   double _calculateChestWidth(
@@ -241,13 +268,11 @@ class _CameraScreenState extends State<CameraScreen> {
   ) {
     double shoulderWidth = _distanceBetween(leftShoulder, rightShoulder);
     double hipWidth = _distanceBetween(leftHip, rightHip);
-    return (shoulderWidth + hipWidth) /
-        2 *
-        1.2; // تعديل للحصول على محيط الصدر الحقيقي
+    return (shoulderWidth + hipWidth) / 2 * 1.2;
   }
 
   double _calculateWaistWidth(PoseLandmark leftHip, PoseLandmark rightHip) {
-    return _distanceBetween(leftHip, rightHip) * 1.1; // تصحيح للانحناء
+    return _distanceBetween(leftHip, rightHip) * 1.1;
   }
 
   double _calculateArmLength(
@@ -264,7 +289,7 @@ class _CameraScreenState extends State<CameraScreen> {
     double rightArm =
         _distanceBetween(rightShoulder, rightElbow) +
         _distanceBetween(rightElbow, rightWrist);
-    return (leftArm + rightArm) / 2 * 1.05; // تصحيح للانحناء
+    return (leftArm + rightArm) / 2 * 1.05;
   }
 
   double _calculateLegLength(
@@ -281,7 +306,7 @@ class _CameraScreenState extends State<CameraScreen> {
     double rightLeg =
         _distanceBetween(rightHip, rightKnee) +
         _distanceBetween(rightKnee, rightAnkle);
-    return (leftLeg + rightLeg) / 2 * 1.08; // تصحيح للانحناء
+    return (leftLeg + rightLeg) / 2 * 1.08;
   }
 
   double _calculateNeckCircumference(
@@ -289,9 +314,8 @@ class _CameraScreenState extends State<CameraScreen> {
     PoseLandmark rightShoulder,
     PoseLandmark nose,
   ) {
-    double neckWidth = _distanceBetween(leftShoulder, rightShoulder) * 0.2;
-    double neckHeight = _distanceBetween(nose, leftShoulder) * 0.15;
-    return _calculateEllipticalCircumference(neckWidth, neckHeight);
+    double neckWidth = _distanceBetween(leftShoulder, rightShoulder) * 0.3;
+    return neckWidth * pi;
   }
 
   void _applyBodyTypeCorrections(Map<String, double> measurements) {
@@ -337,7 +361,6 @@ class _CameraScreenState extends State<CameraScreen> {
   }
 
   double _calculateEllipticalCircumference(double width, double depth) {
-    // استخدام صيغة رامانوجان لحساب محيط القطع الناقص بدقة أعلى
     double a = width / 2;
     double b = depth / 2;
     double h = pow(a - b, 2) / pow(a + b, 2);
@@ -374,7 +397,6 @@ class _CameraScreenState extends State<CameraScreen> {
   }
 
   String _getTshirtSize(double chest, double shoulders) {
-    // جدول مقاسات التيشيرت المحسن
     Map<String, Map<String, double>> sizeChart = {
       'XS': {'chest': 86, 'shoulders': 38, 'length': 66},
       'S': {'chest': 94, 'shoulders': 40, 'length': 68},
@@ -385,18 +407,15 @@ class _CameraScreenState extends State<CameraScreen> {
       '3XL': {'chest': 134, 'shoulders': 50, 'length': 78},
     };
 
-    // حساب المقاس الأقرب مع مراعاة الطول والوزن
     String bestSize = 'L';
     double minScore = double.infinity;
-    double idealLength =
-        userHeight * 0.4; // طول مثالي للتيشيرت حوالي 40% من طول الجسم
+    double idealLength = userHeight * 0.4;
 
     for (var entry in sizeChart.entries) {
       double chestDiff = (chest - entry.value['chest']!).abs() * 1.5;
       double shoulderDiff = (shoulders - entry.value['shoulders']!).abs() * 1.2;
       double lengthDiff = (idealLength - entry.value['length']!).abs();
 
-      // تعديل النتيجة بناءً على مؤشر كتلة الجسم
       double bmi = userWeight / pow(userHeight / 100, 2);
       double bmiAdjustment = (bmi - 22).abs() * 0.5;
 
@@ -408,7 +427,6 @@ class _CameraScreenState extends State<CameraScreen> {
       }
     }
 
-    // تحديد نوع الملاءمة
     String fit;
     double chestToHeightRatio = chest / userHeight;
     if (chestToHeightRatio < 0.5) {
@@ -423,21 +441,19 @@ class _CameraScreenState extends State<CameraScreen> {
   }
 
   String _getShirtSize(double chest, double armLength, double neck) {
-    // جدول مقاسات القميص المحسن
     Map<String, Map<String, double>> shirtSizes = {
-      '14': {'neck': 35.5, 'chest': 88, 'sleeve': 58, 'length': 68},
-      '14.5': {'neck': 37, 'chest': 92, 'sleeve': 59, 'length': 69},
-      '15': {'neck': 38, 'chest': 96, 'sleeve': 60, 'length': 70},
-      '15.5': {'neck': 39.5, 'chest': 100, 'sleeve': 61, 'length': 71},
-      '16': {'neck': 40.5, 'chest': 104, 'sleeve': 62, 'length': 72},
-      '16.5': {'neck': 42, 'chest': 108, 'sleeve': 63, 'length': 73},
-      '17': {'neck': 43, 'chest': 112, 'sleeve': 64, 'length': 74},
-      '17.5': {'neck': 44.5, 'chest': 116, 'sleeve': 65, 'length': 75},
+      'XS': {'neck': 35.5, 'chest': 88, 'sleeve': 58, 'length': 68},
+      'S': {'neck': 37, 'chest': 92, 'sleeve': 59, 'length': 69},
+      'M': {'neck': 38.5, 'chest': 96, 'sleeve': 60, 'length': 70},
+      'L': {'neck': 40, 'chest': 100, 'sleeve': 61, 'length': 71},
+      'XL': {'neck': 41.5, 'chest': 104, 'sleeve': 62, 'length': 72},
+      'XXL': {'neck': 43, 'chest': 108, 'sleeve': 63, 'length': 73},
+      '3XL': {'neck': 44.5, 'chest': 112, 'sleeve': 64, 'length': 74},
     };
 
-    String bestSize = '16';
+    String bestSize = 'L';
     double minScore = double.infinity;
-    double idealLength = userHeight * 0.45; // طول مثالي للقميص
+    double idealLength = userHeight * 0.45;
 
     for (var entry in shirtSizes.entries) {
       double neckDiff = (neck - entry.value['neck']!).abs() * 2.0;
@@ -445,7 +461,6 @@ class _CameraScreenState extends State<CameraScreen> {
       double sleeveDiff = (armLength - entry.value['sleeve']!).abs() * 1.2;
       double lengthDiff = (idealLength - entry.value['length']!).abs();
 
-      // تعديل حسب الوزن
       double weightAdjustment = (userWeight - 70) * 0.1;
 
       double score =
@@ -461,11 +476,10 @@ class _CameraScreenState extends State<CameraScreen> {
       }
     }
 
-    // تحديد نوع الملاءمة والطول
     String fit = _determineShirtFit(chest, neck, userWeight, userHeight);
     String length = _determineShirtLength(armLength, userHeight);
 
-    return 'مقاس $bestSize ($fit - $length)';
+    return '$bestSize ($fit)';
   }
 
   String _determineShirtFit(
@@ -498,7 +512,6 @@ class _CameraScreenState extends State<CameraScreen> {
   }
 
   String _getPantsSize(double waist, double hipWidth, double legLength) {
-    // جدول مقاسات البنطلون المحسن
     Map<String, Map<String, double>> pantsSizes = {
       '28': {'waist': 71, 'hip': 89, 'inseam': 76, 'thigh': 54},
       '30': {'waist': 76, 'hip': 94, 'inseam': 77, 'thigh': 56},
@@ -512,14 +525,13 @@ class _CameraScreenState extends State<CameraScreen> {
 
     String bestSize = '34';
     double minScore = double.infinity;
-    double idealInseam = userHeight * 0.45; // طول مثالي للبنطلون
+    double idealInseam = userHeight * 0.45;
 
     for (var entry in pantsSizes.entries) {
       double waistDiff = (waist - entry.value['waist']!).abs() * 2.0;
       double hipDiff = (hipWidth - entry.value['hip']!).abs() * 1.5;
       double inseamDiff = (idealInseam - entry.value['inseam']!).abs() * 1.2;
 
-      // تعديل حسب مؤشر كتلة الجسم
       double bmi = userWeight / pow(userHeight / 100, 2);
       double bmiAdjustment = (bmi - 22).abs() * 0.8;
 
@@ -531,7 +543,6 @@ class _CameraScreenState extends State<CameraScreen> {
       }
     }
 
-    // تحديد نوع الملاءمة والطول
     String fit = _determinePantsFit(waist, hipWidth, userWeight, userHeight);
     String length = _determinePantsLength(legLength, userHeight);
 
@@ -568,7 +579,6 @@ class _CameraScreenState extends State<CameraScreen> {
   }
 
   String _getJacketSize(double chest, double shoulders, double armLength) {
-    // جدول مقاسات الجاكيت المحسن
     Map<String, Map<String, double>> jacketSizes = {
       'S': {'chest': 94, 'shoulders': 42, 'sleeve': 59, 'length': 68},
       'M': {'chest': 102, 'shoulders': 44, 'sleeve': 61, 'length': 70},
@@ -580,7 +590,7 @@ class _CameraScreenState extends State<CameraScreen> {
 
     String bestSize = 'L';
     double minScore = double.infinity;
-    double idealLength = userHeight * 0.42; // طول مثالي للجاكيت
+    double idealLength = userHeight * 0.42;
 
     for (var entry in jacketSizes.entries) {
       double chestDiff = (chest - entry.value['chest']!).abs() * 1.5;
@@ -588,7 +598,6 @@ class _CameraScreenState extends State<CameraScreen> {
       double sleeveDiff = (armLength - entry.value['sleeve']!).abs() * 1.2;
       double lengthDiff = (idealLength - entry.value['length']!).abs();
 
-      // تعديل حسب الوزن ومؤشر كتلة الجسم
       double bmi = userWeight / pow(userHeight / 100, 2);
       double weightAdjustment = (userWeight - 70) * 0.15;
       double bmiAdjustment = (bmi - 22).abs() * 0.7;
@@ -607,7 +616,6 @@ class _CameraScreenState extends State<CameraScreen> {
       }
     }
 
-    // تحديد نوع الملاءمة
     String fit = _determineJacketFit(chest, shoulders, userWeight, userHeight);
 
     return 'مقاس $bestSize ($fit)';
@@ -720,19 +728,22 @@ class _CameraScreenState extends State<CameraScreen> {
           children: [
             Icon(icon, color: Colors.blue, size: 30),
             const SizedBox(width: 16),
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(title, style: const TextStyle(fontSize: 16)),
-                Text(
-                  size,
-                  style: const TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.blueAccent,
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title, style: const TextStyle(fontSize: 16)),
+                  const SizedBox(height: 4),
+                  Text(
+                    size,
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.blueAccent,
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ],
         ),
@@ -797,6 +808,16 @@ class _CameraScreenState extends State<CameraScreen> {
             const SizedBox(height: 24),
           ],
         ),
+      ),
+    );
+  }
+
+  void _showError(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: Colors.red,
+        duration: const Duration(seconds: 3),
       ),
     );
   }
@@ -982,7 +1003,7 @@ class PosePainter extends CustomPainter {
           ..strokeWidth = 4.0
           ..style = PaintingStyle.stroke;
 
-    for (final landmark in pose.landmarks.values) {
+    for (final landmark in pose.landmarks) {
       canvas.drawCircle(
         Offset(landmark.x * size.width, landmark.y * size.height),
         4.0,
