@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as path;
 import 'pose_detector.dart';
+import 'pose_painter.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -36,14 +37,138 @@ class MyApp extends StatelessWidget {
           contentPadding: EdgeInsets.symmetric(vertical: 14, horizontal: 16),
         ),
       ),
-      home: CameraScreen(camera: camera),
+      home: UserDataScreen(camera: camera),
+    );
+  }
+}
+
+class UserDataScreen extends StatefulWidget {
+  final CameraDescription camera;
+  const UserDataScreen({super.key, required this.camera});
+
+  @override
+  State<UserDataScreen> createState() => _UserDataScreenState();
+}
+
+class _UserDataScreenState extends State<UserDataScreen> {
+  final TextEditingController heightController = TextEditingController(
+    text: '170',
+  );
+  final TextEditingController weightController = TextEditingController(
+    text: '70',
+  );
+  final _formKey = GlobalKey<FormState>();
+
+  @override
+  void dispose() {
+    heightController.dispose();
+    weightController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('قياس الملابس الذكي')),
+      body: SingleChildScrollView(
+        child: Padding(
+          padding: const EdgeInsets.all(24.0),
+          child: Form(
+            key: _formKey,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Icon(Icons.person_outline, size: 120, color: Colors.blue),
+                const SizedBox(height: 32),
+                const Text(
+                  'أدخل بياناتك للحصول على مقاسات دقيقة',
+                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 32),
+                TextFormField(
+                  controller: heightController,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: 'الطول (سم)',
+                    prefixIcon: Icon(Icons.height),
+                    suffixText: 'سم',
+                  ),
+                  validator: (value) {
+                    if (value == null || value.isEmpty) {
+                      return 'من فضلك أدخل طولك';
+                    }
+                    final height = double.tryParse(value);
+                    if (height == null || height < 100 || height > 250) {
+                      return 'من فضلك أدخل طول صحيح (100-250 سم)';
+                    }
+                    return null;
+                  },
+                ),
+                const SizedBox(height: 16),
+                TextFormField(
+                  controller: weightController,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: 'الوزن (كجم)',
+                    prefixIcon: Icon(Icons.monitor_weight),
+                    suffixText: 'كجم',
+                  ),
+                  validator: (value) {
+                    if (value == null || value.isEmpty) {
+                      return 'من فضلك أدخل وزنك';
+                    }
+                    final weight = double.tryParse(value);
+                    if (weight == null || weight < 30 || weight > 200) {
+                      return 'من فضلك أدخل وزن صحيح (30-200 كجم)';
+                    }
+                    return null;
+                  },
+                ),
+                const SizedBox(height: 32),
+                ElevatedButton(
+                  onPressed: () {
+                    if (_formKey.currentState!.validate()) {
+                      Navigator.of(context).pushReplacement(
+                        MaterialPageRoute(
+                          builder:
+                              (context) => CameraScreen(
+                                camera: widget.camera,
+                                userHeight: double.parse(heightController.text),
+                                userWeight: double.parse(weightController.text),
+                              ),
+                        ),
+                      );
+                    }
+                  },
+                  style: ElevatedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                  ),
+                  child: const Text('متابعة', style: TextStyle(fontSize: 18)),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
 
 class CameraScreen extends StatefulWidget {
   final CameraDescription camera;
-  const CameraScreen({super.key, required this.camera});
+  final double userHeight;
+  final double userWeight;
+
+  const CameraScreen({
+    super.key,
+    required this.camera,
+    required this.userHeight,
+    required this.userWeight,
+  });
 
   @override
   State<CameraScreen> createState() => _CameraScreenState();
@@ -53,16 +178,12 @@ class _CameraScreenState extends State<CameraScreen> {
   late CameraController _controller;
   late Future<void> _initializeControllerFuture;
   final _poseDetector = PoseDetector();
-  List<Pose>? poses;
+  Pose? detectedPose;
   bool isProcessing = false;
-  Map<String, String> clothingSizes = {};
+  Map<String, Map<String, String>> clothingSizes = {};
   double conversionFactor = 0.0;
-
-  double userHeight = 170.0;
-  double userWeight = 70.0;
-  final TextEditingController heightController = TextEditingController();
-  final TextEditingController weightController = TextEditingController();
-  bool showInputFields = true;
+  String? errorMessage;
+  Size? imageSize;
 
   @override
   void initState() {
@@ -70,22 +191,22 @@ class _CameraScreenState extends State<CameraScreen> {
     _initializeDetector();
     _controller = CameraController(
       widget.camera,
-      ResolutionPreset.medium,
+      ResolutionPreset.max,
       enableAudio: false,
       imageFormatGroup: ImageFormatGroup.jpeg,
     );
-    _controller.lockCaptureOrientation(DeviceOrientation.portraitUp);
-    _initializeControllerFuture = _controller.initialize();
-
-    heightController.text = userHeight.toString();
-    weightController.text = userWeight.toString();
+    _initializeControllerFuture = _controller.initialize().then((_) {
+      if (mounted) setState(() {});
+    });
   }
 
   Future<void> _initializeDetector() async {
     try {
       await _poseDetector.initialize();
     } catch (e) {
-      debugPrint('Error initializing pose detector: $e');
+      setState(() {
+        errorMessage = 'خطأ في تهيئة نظام كشف الأشخاص: $e';
+      });
     }
   }
 
@@ -93,8 +214,6 @@ class _CameraScreenState extends State<CameraScreen> {
   void dispose() {
     _controller.dispose();
     _poseDetector.close();
-    heightController.dispose();
-    weightController.dispose();
     super.dispose();
   }
 
@@ -102,31 +221,38 @@ class _CameraScreenState extends State<CameraScreen> {
     if (isProcessing) return;
     setState(() {
       isProcessing = true;
-      showInputFields = false;
+      errorMessage = null;
     });
 
     try {
       final poseResults = await _poseDetector.detectPose(imageFile.path);
-      poses = poseResults.map((p) => Pose.fromJson(p)).toList();
+      if (poseResults.isEmpty) {
+        setState(() {
+          errorMessage =
+              'لم يتم العثور على شخص في الصورة. يرجى التأكد من ظهور كامل جسمك في الإطار.';
+          detectedPose = null;
+        });
+        return;
+      }
 
-      if (poses != null && poses!.isNotEmpty) {
-        try {
-          final measurements = _calculateBodyMeasurements(poses!.first);
-          _determineClothingSizes(measurements);
-        } catch (e) {
-          _showError(
-            'لم نتمكن من تحديد جميع نقاط الجسم. يرجى المحاولة مرة أخرى في وضع مختلف.',
-          );
-          debugPrint('Error calculating measurements: $e');
-        }
-      } else {
-        _showError(
-          'لم يتم العثور على شخص في الصورة. يرجى التأكد من ظهور كامل جسمك في الإطار.',
-        );
+      final pose = Pose.fromJson(poseResults[0]);
+      setState(() {
+        detectedPose = pose;
+      });
+
+      try {
+        final measurements = _calculateBodyMeasurements(pose);
+        _determineClothingSizes(measurements);
+      } catch (e) {
+        setState(() {
+          errorMessage =
+              'لم نتمكن من تحديد جميع نقاط الجسم. يرجى المحاولة مرة أخرى في وضع مختلف.';
+        });
       }
     } catch (e) {
-      _showError('حدث خطأ أثناء معالجة الصورة. يرجى المحاولة مرة أخرى.');
-      debugPrint('Error processing image: $e');
+      setState(() {
+        errorMessage = 'حدث خطأ أثناء معالجة الصورة. يرجى المحاولة مرة أخرى.';
+      });
     } finally {
       setState(() {
         isProcessing = false;
@@ -134,11 +260,275 @@ class _CameraScreenState extends State<CameraScreen> {
     }
   }
 
-  double _distanceBetween(PoseLandmark p1, PoseLandmark p2) {
-    return sqrt(pow(p1.x - p2.x, 2) + pow(p1.y - p2.y, 2));
+  void _resetMeasurements() {
+    setState(() {
+      detectedPose = null;
+      clothingSizes.clear();
+      errorMessage = null;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final screenSize = MediaQuery.of(context).size;
+    // Make camera preview square
+    final previewSize = screenSize.width;
+
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        title: const Text('قياس الملابس الذكي'),
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () {
+            Navigator.of(context).pushReplacement(
+              MaterialPageRoute(
+                builder: (context) => UserDataScreen(camera: widget.camera),
+              ),
+            );
+          },
+        ),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: _resetMeasurements,
+            tooltip: 'قياس جديد',
+          ),
+        ],
+      ),
+      body: FutureBuilder<void>(
+        future: _initializeControllerFuture,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.done) {
+            if (!_controller.value.isInitialized) {
+              return const Center(child: CircularProgressIndicator());
+            }
+
+            return Stack(
+              children: [
+                Column(
+                  children: [
+                    Container(
+                      width: screenSize.width,
+                      height: previewSize,
+                      color: Colors.black,
+                      child: ClipRect(
+                        child: OverflowBox(
+                          alignment: Alignment.center,
+                          child: FittedBox(
+                            fit: BoxFit.cover,
+                            child: SizedBox(
+                              width: previewSize,
+                              height: previewSize,
+                              child: Stack(
+                                children: [
+                                  Transform.scale(
+                                    scale: 1.0,
+                                    child: Center(
+                                      child: CameraPreview(_controller),
+                                    ),
+                                  ),
+                                  if (detectedPose != null && imageSize != null)
+                                    CustomPaint(
+                                      painter: PosePainter(
+                                        pose: detectedPose!,
+                                        imageSize: imageSize!,
+                                        widgetSize: Size(
+                                          previewSize,
+                                          previewSize,
+                                        ),
+                                      ),
+                                    ),
+                                  if (errorMessage != null)
+                                    Container(
+                                      color: Colors.black54,
+                                      padding: const EdgeInsets.all(16),
+                                      child: Center(
+                                        child: Text(
+                                          errorMessage!,
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 16,
+                                          ),
+                                          textAlign: TextAlign.center,
+                                        ),
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                    if (!clothingSizes.isEmpty)
+                      Expanded(
+                        child: Container(
+                          width: double.infinity,
+                          color: Colors.white,
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              Padding(
+                                padding: const EdgeInsets.all(16),
+                                child: Row(
+                                  mainAxisAlignment:
+                                      MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    const Text(
+                                      'المقاسات المقترحة:',
+                                      style: TextStyle(
+                                        fontSize: 20,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                    IconButton(
+                                      icon: const Icon(Icons.close),
+                                      onPressed: _resetMeasurements,
+                                      color: Colors.grey[600],
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              Expanded(
+                                child: ListView.builder(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 16,
+                                  ),
+                                  itemCount: clothingSizes.length,
+                                  itemBuilder: (context, index) {
+                                    final entry = clothingSizes.entries
+                                        .elementAt(index);
+                                    return Container(
+                                      margin: const EdgeInsets.only(bottom: 12),
+                                      padding: const EdgeInsets.all(16),
+                                      decoration: BoxDecoration(
+                                        color: Colors.grey[50],
+                                        borderRadius: BorderRadius.circular(12),
+                                      ),
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Row(
+                                            children: [
+                                              Icon(
+                                                _getClothingIcon(entry.key),
+                                                size: 24,
+                                                color: Colors.blue,
+                                              ),
+                                              const SizedBox(width: 8),
+                                              Text(
+                                                entry.key,
+                                                style: const TextStyle(
+                                                  fontSize: 18,
+                                                  fontWeight: FontWeight.bold,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                          const SizedBox(height: 12),
+                                          Row(
+                                            children: [
+                                              Text(
+                                                'المقاس: ',
+                                                style: TextStyle(
+                                                  fontSize: 16,
+                                                  color: Colors.grey[700],
+                                                ),
+                                              ),
+                                              Text(
+                                                '${entry.value['size']}',
+                                                style: const TextStyle(
+                                                  fontSize: 16,
+                                                  color: Colors.blue,
+                                                  fontWeight: FontWeight.w500,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                          if (entry.value['fit'] != null)
+                                            Row(
+                                              children: [
+                                                Text(
+                                                  'الفيت: ',
+                                                  style: TextStyle(
+                                                    fontSize: 16,
+                                                    color: Colors.grey[700],
+                                                  ),
+                                                ),
+                                                Text(
+                                                  '${entry.value['fit']}',
+                                                  style: const TextStyle(
+                                                    fontSize: 16,
+                                                    color: Colors.blue,
+                                                    fontWeight: FontWeight.w500,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                        ],
+                                      ),
+                                    );
+                                  },
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ],
+            );
+          } else {
+            return const Center(child: CircularProgressIndicator());
+          }
+        },
+      ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: () async {
+          try {
+            await _initializeControllerFuture;
+            final image = await _controller.takePicture();
+            imageSize = await _getImageSize(image.path);
+            await _processImage(image);
+          } catch (e) {
+            setState(() {
+              errorMessage =
+                  'حدث خطأ في التقاط الصورة. يرجى المحاولة مرة أخرى.';
+            });
+          }
+        },
+        child: const Icon(Icons.camera_alt),
+      ),
+    );
+  }
+
+  IconData _getClothingIcon(String type) {
+    switch (type) {
+      case 'تيشيرت':
+        return Icons.dry_cleaning;
+      case 'قميص':
+        return Icons.checkroom;
+      case 'جاكيت':
+        return Icons.style;
+      case 'بنطلون':
+        return Icons.accessibility_new;
+      default:
+        return Icons.checkroom;
+    }
+  }
+
+  Future<Size> _getImageSize(String imagePath) async {
+    final file = File(imagePath);
+    final bytes = await file.readAsBytes();
+    final image = await decodeImageFromList(bytes);
+    return Size(image.width.toDouble(), image.height.toDouble());
   }
 
   Map<String, double> _calculateBodyMeasurements(Pose pose) {
+    // Basic landmarks
     final leftShoulder = pose.getLandmark(PoseLandmarkType.leftShoulder);
     final rightShoulder = pose.getLandmark(PoseLandmarkType.rightShoulder);
     final leftHip = pose.getLandmark(PoseLandmarkType.leftHip);
@@ -155,6 +545,17 @@ class _CameraScreenState extends State<CameraScreen> {
     final leftHeel = pose.getLandmark(PoseLandmarkType.leftHeel);
     final rightHeel = pose.getLandmark(PoseLandmarkType.rightHeel);
 
+    // Additional landmarks for better accuracy
+    final leftEar = pose.getLandmark(PoseLandmarkType.leftEar);
+    final rightEar = pose.getLandmark(PoseLandmarkType.rightEar);
+    final leftEye = pose.getLandmark(PoseLandmarkType.leftEye);
+    final rightEye = pose.getLandmark(PoseLandmarkType.rightEye);
+    final leftPinky = pose.getLandmark(PoseLandmarkType.leftPinky);
+    final rightPinky = pose.getLandmark(PoseLandmarkType.rightPinky);
+    final leftIndex = pose.getLandmark(PoseLandmarkType.leftIndex);
+    final rightIndex = pose.getLandmark(PoseLandmarkType.rightIndex);
+
+    // Null checks for all landmarks
     if (leftShoulder == null ||
         rightShoulder == null ||
         leftHip == null ||
@@ -169,851 +570,449 @@ class _CameraScreenState extends State<CameraScreen> {
         rightAnkle == null ||
         nose == null ||
         leftHeel == null ||
-        rightHeel == null) {
+        rightHeel == null ||
+        leftEar == null ||
+        rightEar == null ||
+        leftEye == null ||
+        rightEye == null ||
+        leftPinky == null ||
+        rightPinky == null ||
+        leftIndex == null ||
+        rightIndex == null) {
       throw Exception('Missing required landmarks');
     }
 
-    double heightPixels = _calculateTotalHeight(nose, leftHeel, rightHeel);
-    conversionFactor = userHeight / heightPixels;
+    // New waist-specific landmarks (after null checks)
+    final leftWaistPoint = _interpolatePoint(
+      leftShoulder,
+      leftHip,
+      0.6,
+      PoseLandmarkType.leftHip,
+    );
+    final rightWaistPoint = _interpolatePoint(
+      rightShoulder,
+      rightHip,
+      0.6,
+      PoseLandmarkType.rightHip,
+    );
+    final frontWaistPoint = _interpolatePoint(
+      leftWaistPoint,
+      rightWaistPoint,
+      0.5,
+      PoseLandmarkType.nose, // Using nose type as a generic center point
+    );
 
-    double shoulderWidth = _calculateShoulderWidth(leftShoulder, rightShoulder);
+    // Calculate mid-points for better waist estimation
+    final midLeftTorso = _interpolatePoint(
+      leftShoulder,
+      leftHip,
+      0.5,
+      PoseLandmarkType.leftHip,
+    );
+    final midRightTorso = _interpolatePoint(
+      rightShoulder,
+      rightHip,
+      0.5,
+      PoseLandmarkType.rightHip,
+    );
 
-    double chestWidth = _calculateChestWidth(
+    // Calculate total height more accurately using multiple points
+    double heightPixels = _calculateEnhancedHeight(
+      nose,
+      leftEye,
+      rightEye,
+      leftEar,
+      rightEar,
+      leftHeel,
+      rightHeel,
+    );
+    conversionFactor = widget.userHeight / heightPixels;
+
+    // Enhanced measurements using additional points
+    double shoulderWidth = _calculateEnhancedShoulderWidth(
       leftShoulder,
       rightShoulder,
-      leftHip,
-      rightHip,
-    );
-    double chestDepth = _calculateChestDepth(
-      chestWidth,
-      userWeight,
-      userHeight,
-    );
-    double chestCircumference = _calculateEllipticalCircumference(
-      chestWidth,
-      chestDepth,
-    );
-
-    double waistWidth = _calculateWaistWidth(leftHip, rightHip);
-    double waistDepth = _calculateWaistDepth(
-      waistWidth,
-      userWeight,
-      userHeight,
-    );
-    double waistCircumference = _calculateEllipticalCircumference(
-      waistWidth,
-      waistDepth,
+      leftElbow,
+      rightElbow,
     );
 
     double armLength = _calculateArmLength(
       leftShoulder,
       leftElbow,
       leftWrist,
+      leftPinky,
       rightShoulder,
       rightElbow,
       rightWrist,
-    );
-    double legLength = _calculateLegLength(
-      leftHip,
-      leftKnee,
-      leftAnkle,
-      rightHip,
-      rightKnee,
-      rightAnkle,
+      rightPinky,
     );
 
-    double neckCircumference = _calculateNeckCircumference(
+    double chestWidth = _calculateEnhancedChestWidth(
       leftShoulder,
       rightShoulder,
-      nose,
+      leftHip,
+      rightHip,
     );
 
-    Map<String, double> measurements = {
+    double chestDepth = _calculateEnhancedChestDepth(
+      chestWidth,
+      widget.userWeight,
+      widget.userHeight,
+      shoulderWidth,
+    );
+
+    double chestCircumference = _calculateEnhancedEllipticalCircumference(
+      chestWidth,
+      chestDepth,
+    );
+
+    double waistWidth = _calculateEnhancedWaistWidth(
+      leftHip,
+      rightHip,
+      leftWaistPoint,
+      rightWaistPoint,
+      midLeftTorso,
+      midRightTorso,
+      leftElbow,
+      rightElbow,
+    );
+
+    double waistDepth = _calculateEnhancedWaistDepth(
+      waistWidth,
+      widget.userWeight,
+      widget.userHeight,
+      chestWidth,
+      frontWaistPoint.z,
+    );
+
+    double waistCircumference = _calculateEnhancedEllipticalCircumference(
+      waistWidth,
+      waistDepth,
+    );
+
+    double hipWidth = _calculateEnhancedHipWidth(leftHip, rightHip);
+    double hipDepth = _calculateEnhancedHipDepth(
+      hipWidth,
+      widget.userWeight,
+      widget.userHeight,
+      waistWidth,
+    );
+
+    double inseam = _calculateInseam(leftHip, leftKnee, leftAnkle);
+    double outseam = _calculateOutseam(leftHip, leftKnee, leftAnkle, leftHeel);
+
+    return {
       'shoulderWidth': shoulderWidth * conversionFactor,
+      'armLength': armLength * conversionFactor,
       'chestCircumference': chestCircumference * conversionFactor,
       'waistCircumference': waistCircumference * conversionFactor,
-      'armLength': armLength * conversionFactor,
-      'legLength': legLength * conversionFactor,
-      'hipWidth': waistWidth * 1.4 * conversionFactor,
-      'neckCircumference': neckCircumference * conversionFactor,
-      'inseam': legLength * 0.67 * conversionFactor,
+      'hipCircumference':
+          _calculateEnhancedEllipticalCircumference(hipWidth, hipDepth) *
+          conversionFactor,
+      'inseam': inseam * conversionFactor,
+      'outseam': outseam * conversionFactor,
     };
-
-    _applyBodyTypeCorrections(measurements);
-    return measurements;
   }
 
-  double _calculateTotalHeight(
+  // New enhanced calculation methods
+  double _calculateEnhancedHeight(
     PoseLandmark nose,
+    PoseLandmark leftEye,
+    PoseLandmark rightEye,
+    PoseLandmark leftEar,
+    PoseLandmark rightEar,
     PoseLandmark leftHeel,
     PoseLandmark rightHeel,
   ) {
-    double leftHeight = _distanceBetween(nose, leftHeel);
-    double rightHeight = _distanceBetween(nose, rightHeel);
-    return (leftHeight + rightHeight) / 2;
+    // Use the highest point among head landmarks
+    double topY = min(
+      min(nose.y, min(leftEye.y, rightEye.y)),
+      min(leftEar.y, rightEar.y),
+    );
+    // Use the lowest point among heel landmarks
+    double bottomY = max(leftHeel.y, rightHeel.y);
+    return bottomY - topY;
   }
 
-  double _calculateShoulderWidth(
+  double _calculateEnhancedShoulderWidth(
     PoseLandmark leftShoulder,
     PoseLandmark rightShoulder,
+    PoseLandmark leftElbow,
+    PoseLandmark rightElbow,
   ) {
-    return _distanceBetween(leftShoulder, rightShoulder) * 1.15;
-  }
-
-  double _calculateChestWidth(
-    PoseLandmark leftShoulder,
-    PoseLandmark rightShoulder,
-    PoseLandmark leftHip,
-    PoseLandmark rightHip,
-  ) {
-    double shoulderWidth = _distanceBetween(leftShoulder, rightShoulder);
-    double hipWidth = _distanceBetween(leftHip, rightHip);
-    return (shoulderWidth + hipWidth) / 2 * 1.2;
-  }
-
-  double _calculateWaistWidth(PoseLandmark leftHip, PoseLandmark rightHip) {
-    return _distanceBetween(leftHip, rightHip) * 1.1;
+    double directWidth = (rightShoulder.x - leftShoulder.x).abs();
+    double elbowWidth = (rightElbow.x - leftElbow.x).abs();
+    // Use weighted average favoring direct shoulder measurement
+    return (directWidth * 0.7) + (elbowWidth * 0.3);
   }
 
   double _calculateArmLength(
     PoseLandmark leftShoulder,
     PoseLandmark leftElbow,
     PoseLandmark leftWrist,
+    PoseLandmark leftPinky,
     PoseLandmark rightShoulder,
     PoseLandmark rightElbow,
     PoseLandmark rightWrist,
+    PoseLandmark rightPinky,
   ) {
-    double leftArm =
-        _distanceBetween(leftShoulder, leftElbow) +
-        _distanceBetween(leftElbow, leftWrist);
-    double rightArm =
-        _distanceBetween(rightShoulder, rightElbow) +
-        _distanceBetween(rightElbow, rightWrist);
-    return (leftArm + rightArm) / 2 * 1.05;
-  }
-
-  double _calculateLegLength(
-    PoseLandmark leftHip,
-    PoseLandmark leftKnee,
-    PoseLandmark leftAnkle,
-    PoseLandmark rightHip,
-    PoseLandmark rightKnee,
-    PoseLandmark rightAnkle,
-  ) {
-    double leftLeg =
-        _distanceBetween(leftHip, leftKnee) +
-        _distanceBetween(leftKnee, leftAnkle);
-    double rightLeg =
-        _distanceBetween(rightHip, rightKnee) +
-        _distanceBetween(rightKnee, rightAnkle);
-    return (leftLeg + rightLeg) / 2 * 1.08;
-  }
-
-  double _calculateNeckCircumference(
-    PoseLandmark leftShoulder,
-    PoseLandmark rightShoulder,
-    PoseLandmark nose,
-  ) {
-    double neckWidth = _distanceBetween(leftShoulder, rightShoulder) * 0.3;
-    return neckWidth * pi;
-  }
-
-  void _applyBodyTypeCorrections(Map<String, double> measurements) {
-    double bmi = userWeight / pow(userHeight / 100, 2);
-    double bodyTypeCorrection = _calculateBodyTypeCorrection(bmi);
-    double muscleFactorCorrection = _calculateMuscleFactorCorrection(
-      measurements,
+    double leftArmLength = _calculateLimbLength(
+      leftShoulder,
+      leftElbow,
+      leftWrist,
+      leftPinky,
     );
-
-    measurements.forEach((key, value) {
-      switch (key) {
-        case 'chestCircumference':
-          measurements[key] =
-              value *
-              (1 + bodyTypeCorrection * 0.1 + muscleFactorCorrection * 0.15);
-          break;
-        case 'waistCircumference':
-          measurements[key] = value * (1 + bodyTypeCorrection * 0.12);
-          break;
-        case 'hipWidth':
-          measurements[key] = value * (1 + bodyTypeCorrection * 0.08);
-          break;
-        case 'shoulderWidth':
-          measurements[key] = value * (1 + muscleFactorCorrection * 0.1);
-          break;
-      }
-    });
+    double rightArmLength = _calculateLimbLength(
+      rightShoulder,
+      rightElbow,
+      rightWrist,
+      rightPinky,
+    );
+    return (leftArmLength + rightArmLength) / 2;
   }
 
-  double _calculateBodyTypeCorrection(double bmi) {
-    if (bmi < 18.5) return -0.05;
-    if (bmi < 25) return 0;
-    if (bmi < 30) return 0.05;
-    return 0.1;
+  double _calculateLimbLength(
+    PoseLandmark point1,
+    PoseLandmark point2,
+    PoseLandmark point3,
+    PoseLandmark point4,
+  ) {
+    double length1 = _calculateDistance(point1, point2);
+    double length2 = _calculateDistance(point2, point3);
+    double length3 = _calculateDistance(point3, point4);
+    return length1 + length2 + length3;
   }
 
-  double _calculateMuscleFactorCorrection(Map<String, double> measurements) {
-    double shoulderToWaistRatio =
-        measurements['shoulderWidth']! / measurements['waistCircumference']!;
-    if (shoulderToWaistRatio > 0.5) return 0.05;
-    if (shoulderToWaistRatio > 0.45) return 0;
-    return -0.05;
+  double _calculateDistance(PoseLandmark point1, PoseLandmark point2) {
+    double dx = point2.x - point1.x;
+    double dy = point2.y - point1.y;
+    double dz = point2.z - point1.z;
+    return sqrt(dx * dx + dy * dy + dz * dz);
   }
 
-  double _calculateEllipticalCircumference(double width, double depth) {
+  double _calculateInseam(
+    PoseLandmark hip,
+    PoseLandmark knee,
+    PoseLandmark ankle,
+  ) {
+    return _calculateLimbLength(hip, knee, ankle, ankle);
+  }
+
+  double _calculateOutseam(
+    PoseLandmark hip,
+    PoseLandmark knee,
+    PoseLandmark ankle,
+    PoseLandmark heel,
+  ) {
+    return _calculateLimbLength(hip, knee, ankle, heel);
+  }
+
+  double _calculateEnhancedEllipticalCircumference(double width, double depth) {
+    // Using Ramanujan's approximation for ellipse circumference
     double a = width / 2;
     double b = depth / 2;
     double h = pow(a - b, 2) / pow(a + b, 2);
     return pi * (a + b) * (1 + (3 * h) / (10 + sqrt(4 - 3 * h)));
   }
 
-  double _calculateChestDepth(double width, double weight, double height) {
-    double bmi = weight / pow(height / 100, 2);
-    double baseDepth = width * 0.75;
-    double bmiAdjustment = (bmi - 22) * 0.025;
-    return baseDepth * (1 + bmiAdjustment);
+  double _calculateEnhancedChestWidth(
+    PoseLandmark leftShoulder,
+    PoseLandmark rightShoulder,
+    PoseLandmark leftHip,
+    PoseLandmark rightHip,
+  ) {
+    final shoulderWidth = _distanceBetween(leftShoulder, rightShoulder);
+    final hipWidth = _distanceBetween(leftHip, rightHip);
+    return max(shoulderWidth, hipWidth) * conversionFactor;
   }
 
-  double _calculateWaistDepth(double width, double weight, double height) {
-    double bmi = weight / pow(height / 100, 2);
-    double baseDepth = width * 0.75;
-    double bmiAdjustment = (bmi - 22) * 0.025;
-    return baseDepth * (1 + bmiAdjustment);
+  double _calculateEnhancedChestDepth(
+    double width,
+    double weight,
+    double height,
+    double shoulderWidth,
+  ) {
+    final bmi = weight / pow(height / 100, 2);
+    return width * (0.5 + (bmi - 21.75) * 0.01);
+  }
+
+  double _calculateEnhancedWaistWidth(
+    PoseLandmark leftHip,
+    PoseLandmark rightHip,
+    PoseLandmark leftWaistPoint,
+    PoseLandmark rightWaistPoint,
+    PoseLandmark midLeftTorso,
+    PoseLandmark midRightTorso,
+    PoseLandmark leftElbow,
+    PoseLandmark rightElbow,
+  ) {
+    // Calculate different width measurements
+    double hipWidth = _distanceBetween(leftHip, rightHip);
+    double waistPointWidth = _distanceBetween(leftWaistPoint, rightWaistPoint);
+    double midTorsoWidth = _distanceBetween(midLeftTorso, midRightTorso);
+    double elbowWidth = _distanceBetween(leftElbow, rightElbow);
+
+    // Use weighted average of different measurements
+    // Give more weight to waist-specific measurements
+    return (hipWidth * 0.3 +
+            waistPointWidth * 0.4 +
+            midTorsoWidth * 0.2 +
+            elbowWidth * 0.1) *
+        conversionFactor;
+  }
+
+  double _calculateEnhancedWaistDepth(
+    double width,
+    double weight,
+    double height,
+    double chestWidth,
+    double frontZ,
+  ) {
+    final bmi = weight / pow(height / 100, 2);
+
+    // Base depth calculation
+    double baseDepth = width * (0.4 + (bmi - 21.75) * 0.015);
+
+    // Adjust depth based on BMI categories
+    if (bmi < 18.5) {
+      // Underweight - slimmer profile
+      baseDepth *= 0.9;
+    } else if (bmi >= 25 && bmi < 30) {
+      // Overweight - fuller profile
+      baseDepth *= 1.1;
+    } else if (bmi >= 30) {
+      // Obese - fullest profile
+      baseDepth *= 1.2;
+    }
+
+    // Consider the Z-coordinate for depth adjustment
+    double zAdjustment = frontZ * 0.1;
+    baseDepth += zAdjustment;
+
+    // Ensure depth is proportional to chest
+    double maxDepth = chestWidth * 0.8;
+    return min(baseDepth, maxDepth);
+  }
+
+  double _calculateEnhancedHipWidth(
+    PoseLandmark leftHip,
+    PoseLandmark rightHip,
+  ) {
+    return _distanceBetween(leftHip, rightHip) * conversionFactor;
+  }
+
+  double _calculateEnhancedHipDepth(
+    double width,
+    double weight,
+    double height,
+    double waistWidth,
+  ) {
+    final bmi = weight / pow(height / 100, 2);
+    return width * (0.45 + (bmi - 21.75) * 0.0125);
+  }
+
+  double _distanceBetween(PoseLandmark p1, PoseLandmark p2) {
+    return sqrt(pow(p1.x - p2.x, 2) + pow(p1.y - p2.y, 2));
+  }
+
+  String _determineFit(double bmi, double ratio) {
+    if (bmi < 18.5 || ratio < 0.8) return 'سليم فت';
+    if (bmi < 25 || ratio < 0.9) return 'ريجيولار فت';
+    return 'ريلاكسد فت';
   }
 
   void _determineClothingSizes(Map<String, double> measurements) {
-    double chest = measurements['chestCircumference']!;
-    double waist = measurements['waistCircumference']!;
-    double shoulders = measurements['shoulderWidth']!;
-    double armLength = measurements['armLength']!;
-    double legLength = measurements['legLength']!;
-    double hipWidth = measurements['hipWidth']!;
-    double neck = measurements['neckCircumference']!;
+    final chest = measurements['chestCircumference'] ?? 0;
+    final waist = measurements['waistCircumference'] ?? 0;
+    final hip = measurements['hipCircumference'] ?? 0;
+    final inseam = measurements['inseam'] ?? 0;
+    final shoulder = measurements['shoulderWidth'] ?? 0;
 
-    clothingSizes['tshirt'] = _getTshirtSize(chest, shoulders);
-    clothingSizes['shirt'] = _getShirtSize(chest, armLength, neck);
-    clothingSizes['pants'] = _getPantsSize(waist, hipWidth, legLength);
-    clothingSizes['jacket'] = _getJacketSize(chest, shoulders, armLength);
+    final bmi = widget.userWeight / pow(widget.userHeight / 100, 2);
+    final chestToHeightRatio = chest / widget.userHeight;
+    final waistToHipRatio = waist / hip;
+
+    setState(() {
+      clothingSizes = {
+        'تيشيرت': {
+          'size': _getTshirtSize(chest),
+          'fit': _determineFit(bmi, chestToHeightRatio),
+        },
+        'قميص': {
+          'size': _getShirtSize(chest, shoulder),
+          'fit': _determineFit(bmi, chestToHeightRatio),
+        },
+        'جاكيت': {
+          'size': _getJacketSize(chest, shoulder),
+          'fit': _determineFit(bmi, chestToHeightRatio),
+        },
+        'بنطلون': {
+          'size': _getPantsSize(waist, hip, inseam),
+          'fit': _determineFit(bmi, waistToHipRatio),
+        },
+      };
+    });
   }
 
-  String _getTshirtSize(double chest, double shoulders) {
-    Map<String, Map<String, double>> sizeChart = {
-      'XS': {'chest': 86, 'shoulders': 38, 'length': 66},
-      'S': {'chest': 94, 'shoulders': 40, 'length': 68},
-      'M': {'chest': 102, 'shoulders': 42, 'length': 70},
-      'L': {'chest': 110, 'shoulders': 44, 'length': 72},
-      'XL': {'chest': 118, 'shoulders': 46, 'length': 74},
-      'XXL': {'chest': 126, 'shoulders': 48, 'length': 76},
-      '3XL': {'chest': 134, 'shoulders': 50, 'length': 78},
-    };
-
-    String bestSize = 'L';
-    double minScore = double.infinity;
-    double idealLength = userHeight * 0.4;
-
-    for (var entry in sizeChart.entries) {
-      double chestDiff = (chest - entry.value['chest']!).abs() * 1.5;
-      double shoulderDiff = (shoulders - entry.value['shoulders']!).abs() * 1.2;
-      double lengthDiff = (idealLength - entry.value['length']!).abs();
-
-      double bmi = userWeight / pow(userHeight / 100, 2);
-      double bmiAdjustment = (bmi - 22).abs() * 0.5;
-
-      double score = chestDiff + shoulderDiff + lengthDiff + bmiAdjustment;
-
-      if (score < minScore) {
-        minScore = score;
-        bestSize = entry.key;
-      }
-    }
-
-    String fit;
-    double chestToHeightRatio = chest / userHeight;
-    if (chestToHeightRatio < 0.5) {
-      fit = 'سليم فيت';
-    } else if (chestToHeightRatio < 0.55) {
-      fit = 'ريجيولار فيت';
-    } else {
-      fit = 'ريلاكسد فيت';
-    }
-
-    return 'مقاس $bestSize ($fit)';
+  String _getTshirtSize(double chest) {
+    if (chest < 89) return 'XS';
+    if (chest < 97) return 'S';
+    if (chest < 105) return 'M';
+    if (chest < 113) return 'L';
+    if (chest < 121) return 'XL';
+    return '2XL';
   }
 
-  String _getShirtSize(double chest, double armLength, double neck) {
-    Map<String, Map<String, double>> shirtSizes = {
-      'XS': {'neck': 35.5, 'chest': 88, 'sleeve': 58, 'length': 68},
-      'S': {'neck': 37, 'chest': 92, 'sleeve': 59, 'length': 69},
-      'M': {'neck': 38.5, 'chest': 96, 'sleeve': 60, 'length': 70},
-      'L': {'neck': 40, 'chest': 100, 'sleeve': 61, 'length': 71},
-      'XL': {'neck': 41.5, 'chest': 104, 'sleeve': 62, 'length': 72},
-      'XXL': {'neck': 43, 'chest': 108, 'sleeve': 63, 'length': 73},
-      '3XL': {'neck': 44.5, 'chest': 112, 'sleeve': 64, 'length': 74},
-    };
-
-    String bestSize = 'L';
-    double minScore = double.infinity;
-    double idealLength = userHeight * 0.45;
-
-    for (var entry in shirtSizes.entries) {
-      double neckDiff = (neck - entry.value['neck']!).abs() * 2.0;
-      double chestDiff = (chest - entry.value['chest']!).abs() * 1.5;
-      double sleeveDiff = (armLength - entry.value['sleeve']!).abs() * 1.2;
-      double lengthDiff = (idealLength - entry.value['length']!).abs();
-
-      double weightAdjustment = (userWeight - 70) * 0.1;
-
-      double score =
-          neckDiff +
-          chestDiff +
-          sleeveDiff +
-          lengthDiff +
-          weightAdjustment.abs();
-
-      if (score < minScore) {
-        minScore = score;
-        bestSize = entry.key;
-      }
-    }
-
-    String fit = _determineShirtFit(chest, neck, userWeight, userHeight);
-    String length = _determineShirtLength(armLength, userHeight);
-
-    return '$bestSize ($fit)';
+  String _getShirtSize(double chest, double shoulder) {
+    if (chest < 89) return 'XS (14)';
+    if (chest < 97) return 'S (15)';
+    if (chest < 105) return 'M (15.5)';
+    if (chest < 113) return 'L (16)';
+    if (chest < 121) return 'XL (17)';
+    return '2XL (18)';
   }
 
-  String _determineShirtFit(
-    double chest,
-    double neck,
-    double weight,
-    double height,
+  String _getPantsSize(double waist, double hip, double inseam) {
+    // Enhanced pants sizing with more granular measurements
+    if (waist < 71) return '26';
+    if (waist < 73) return '28';
+    if (waist < 76) return '29';
+    if (waist < 78) return '30';
+    if (waist < 81) return '31';
+    if (waist < 83) return '32';
+    if (waist < 86) return '33';
+    if (waist < 88) return '34';
+    if (waist < 91) return '35';
+    if (waist < 93) return '36';
+    if (waist < 96) return '37';
+    if (waist < 98) return '38';
+    if (waist < 101) return '39';
+    if (waist < 103) return '40';
+    return '42';
+  }
+
+  String _getJacketSize(double chest, double shoulder) {
+    if (chest < 89) return '44 (XS)';
+    if (chest < 97) return '46 (S)';
+    if (chest < 105) return '48 (M)';
+    if (chest < 113) return '50 (L)';
+    if (chest < 121) return '52 (XL)';
+    return '54 (2XL)';
+  }
+
+  // New helper method to interpolate between two points
+  PoseLandmark _interpolatePoint(
+    PoseLandmark p1,
+    PoseLandmark p2,
+    double t,
+    PoseLandmarkType type,
   ) {
-    double bmi = weight / pow(height / 100, 2);
-    double chestToNeckRatio = chest / neck;
-
-    if (bmi < 18.5 || chestToNeckRatio < 2.5) {
-      return 'سليم فيت';
-    } else if (bmi < 25 || chestToNeckRatio < 2.7) {
-      return 'ريجيولار فيت';
-    } else {
-      return 'ريلاكسد فيت';
-    }
-  }
-
-  String _determineShirtLength(double armLength, double height) {
-    double armToHeightRatio = armLength / height;
-    if (armToHeightRatio < 0.31) {
-      return 'قصير';
-    } else if (armToHeightRatio < 0.33) {
-      return 'عادي';
-    } else {
-      return 'طويل';
-    }
-  }
-
-  String _getPantsSize(double waist, double hipWidth, double legLength) {
-    Map<String, Map<String, double>> pantsSizes = {
-      '28': {'waist': 71, 'hip': 89, 'inseam': 76, 'thigh': 54},
-      '30': {'waist': 76, 'hip': 94, 'inseam': 77, 'thigh': 56},
-      '32': {'waist': 81, 'hip': 99, 'inseam': 78, 'thigh': 58},
-      '34': {'waist': 86, 'hip': 104, 'inseam': 79, 'thigh': 60},
-      '36': {'waist': 91, 'hip': 109, 'inseam': 80, 'thigh': 62},
-      '38': {'waist': 96, 'hip': 114, 'inseam': 81, 'thigh': 64},
-      '40': {'waist': 101, 'hip': 119, 'inseam': 82, 'thigh': 66},
-      '42': {'waist': 106, 'hip': 124, 'inseam': 83, 'thigh': 68},
-    };
-
-    String bestSize = '34';
-    double minScore = double.infinity;
-    double idealInseam = userHeight * 0.45;
-
-    for (var entry in pantsSizes.entries) {
-      double waistDiff = (waist - entry.value['waist']!).abs() * 2.0;
-      double hipDiff = (hipWidth - entry.value['hip']!).abs() * 1.5;
-      double inseamDiff = (idealInseam - entry.value['inseam']!).abs() * 1.2;
-
-      double bmi = userWeight / pow(userHeight / 100, 2);
-      double bmiAdjustment = (bmi - 22).abs() * 0.8;
-
-      double score = waistDiff + hipDiff + inseamDiff + bmiAdjustment;
-
-      if (score < minScore) {
-        minScore = score;
-        bestSize = entry.key;
-      }
-    }
-
-    String fit = _determinePantsFit(waist, hipWidth, userWeight, userHeight);
-    String length = _determinePantsLength(legLength, userHeight);
-
-    return 'مقاس $bestSize ($fit - $length)';
-  }
-
-  String _determinePantsFit(
-    double waist,
-    double hip,
-    double weight,
-    double height,
-  ) {
-    double bmi = weight / pow(height / 100, 2);
-    double hipToWaistRatio = hip / waist;
-
-    if (bmi < 18.5 || hipToWaistRatio < 1.15) {
-      return 'سليم فيت';
-    } else if (bmi < 25 || hipToWaistRatio < 1.25) {
-      return 'ريجيولار فيت';
-    } else {
-      return 'ريلاكسد فيت';
-    }
-  }
-
-  String _determinePantsLength(double legLength, double height) {
-    double legToHeightRatio = legLength / height;
-    if (legToHeightRatio < 0.43) {
-      return 'قصير';
-    } else if (legToHeightRatio < 0.45) {
-      return 'عادي';
-    } else {
-      return 'طويل';
-    }
-  }
-
-  String _getJacketSize(double chest, double shoulders, double armLength) {
-    Map<String, Map<String, double>> jacketSizes = {
-      'S': {'chest': 94, 'shoulders': 42, 'sleeve': 59, 'length': 68},
-      'M': {'chest': 102, 'shoulders': 44, 'sleeve': 61, 'length': 70},
-      'L': {'chest': 110, 'shoulders': 46, 'sleeve': 63, 'length': 72},
-      'XL': {'chest': 118, 'shoulders': 48, 'sleeve': 65, 'length': 74},
-      'XXL': {'chest': 126, 'shoulders': 50, 'sleeve': 67, 'length': 76},
-      '3XL': {'chest': 134, 'shoulders': 52, 'sleeve': 69, 'length': 78},
-    };
-
-    String bestSize = 'L';
-    double minScore = double.infinity;
-    double idealLength = userHeight * 0.42;
-
-    for (var entry in jacketSizes.entries) {
-      double chestDiff = (chest - entry.value['chest']!).abs() * 1.5;
-      double shoulderDiff = (shoulders - entry.value['shoulders']!).abs() * 1.3;
-      double sleeveDiff = (armLength - entry.value['sleeve']!).abs() * 1.2;
-      double lengthDiff = (idealLength - entry.value['length']!).abs();
-
-      double bmi = userWeight / pow(userHeight / 100, 2);
-      double weightAdjustment = (userWeight - 70) * 0.15;
-      double bmiAdjustment = (bmi - 22).abs() * 0.7;
-
-      double score =
-          chestDiff +
-          shoulderDiff +
-          sleeveDiff +
-          lengthDiff +
-          weightAdjustment.abs() +
-          bmiAdjustment;
-
-      if (score < minScore) {
-        minScore = score;
-        bestSize = entry.key;
-      }
-    }
-
-    String fit = _determineJacketFit(chest, shoulders, userWeight, userHeight);
-
-    return 'مقاس $bestSize ($fit)';
-  }
-
-  String _determineJacketFit(
-    double chest,
-    double shoulders,
-    double weight,
-    double height,
-  ) {
-    double bmi = weight / pow(height / 100, 2);
-    double chestToShoulderRatio = chest / shoulders;
-
-    if (bmi < 18.5 || chestToShoulderRatio < 2.3) {
-      return 'سليم فيت';
-    } else if (bmi < 25 || chestToShoulderRatio < 2.5) {
-      return 'ريجيولار فيت';
-    } else {
-      return 'ريلاكسد فيت';
-    }
-  }
-
-  Widget _buildSizeInfo() {
-    if (clothingSizes.isEmpty) {
-      return const Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.person, size: 60, color: Colors.blue),
-            SizedBox(height: 16),
-            Text(
-              'التقط صورة لمعرفة مقاساتك',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-            ),
-            SizedBox(height: 8),
-            Text(
-              'قف بوضعية واضحة أمام الكاميرا',
-              style: TextStyle(color: Colors.grey),
-            ),
-          ],
-        ),
-      );
-    }
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Padding(
-          padding: EdgeInsets.symmetric(horizontal: 16),
-          child: Text(
-            'مقاسات ملابسك:',
-            style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-          ),
-        ),
-        const SizedBox(height: 8),
-        Expanded(
-          child: ListView(
-            padding: const EdgeInsets.only(bottom: 8),
-            children: [
-              _buildSizeCard('التيشيرت', clothingSizes['tshirt']!, Icons.flag),
-              _buildSizeCard('القميص', clothingSizes['shirt']!, Icons.work),
-              _buildSizeCard(
-                'البنطلون',
-                clothingSizes['pants']!,
-                Icons.straighten,
-              ),
-              _buildSizeCard(
-                'الجاكيت',
-                clothingSizes['jacket']!,
-                Icons.checkroom,
-              ),
-            ],
-          ),
-        ),
-        Center(
-          child: TextButton.icon(
-            onPressed: () {
-              setState(() {
-                showInputFields = true;
-              });
-            },
-            icon: const Icon(Icons.edit, color: Colors.blue),
-            label: const Text(
-              'تعديل الطول والوزن',
-              style: TextStyle(color: Colors.blue, fontSize: 16),
-            ),
-          ),
-        ),
-        const SizedBox(height: 8),
-        const Padding(
-          padding: EdgeInsets.symmetric(horizontal: 16),
-          child: Text(
-            '* هذه المقاسات تقديرية وقد تختلف حسب الماركة',
-            style: TextStyle(fontSize: 12, color: Colors.grey),
-          ),
-        ),
-      ],
+    return PoseLandmark(
+      type: type,
+      x: p1.x + (p2.x - p1.x) * t,
+      y: p1.y + (p2.y - p1.y) * t,
+      z: p1.z + (p2.z - p1.z) * t,
+      visibility: min(p1.visibility, p2.visibility),
     );
-  }
-
-  Widget _buildSizeCard(String title, String size, IconData icon) {
-    return Card(
-      elevation: 2,
-      margin: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Row(
-          children: [
-            Icon(icon, color: Colors.blue, size: 30),
-            const SizedBox(width: 16),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(title, style: const TextStyle(fontSize: 16)),
-                  const SizedBox(height: 4),
-                  Text(
-                    size,
-                    style: const TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.blueAccent,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildInputFields() {
-    return SingleChildScrollView(
-      child: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text(
-              'أدخل بياناتك للحصول على مقاسات أدق',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 24),
-            TextField(
-              controller: heightController,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(
-                labelText: 'الطول (سم)',
-                suffixText: 'سم',
-                icon: Icon(Icons.height, color: Colors.blue),
-              ),
-              onChanged: (value) {
-                setState(() {
-                  userHeight = double.tryParse(value) ?? 170.0;
-                });
-              },
-            ),
-            const SizedBox(height: 20),
-            TextField(
-              controller: weightController,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(
-                labelText: 'الوزن (كجم)',
-                suffixText: 'كجم',
-                icon: Icon(Icons.monitor_weight, color: Colors.blue),
-              ),
-              onChanged: (value) {
-                setState(() {
-                  userWeight = double.tryParse(value) ?? 70.0;
-                });
-              },
-            ),
-            const SizedBox(height: 24),
-            Container(
-              padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 16),
-              decoration: BoxDecoration(
-                color: Colors.blue[50],
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Text(
-                'الطول: ${userHeight.toStringAsFixed(1)} سم - الوزن: ${userWeight.toStringAsFixed(1)} كجم',
-                style: const TextStyle(fontSize: 16, color: Colors.blue),
-              ),
-            ),
-            const SizedBox(height: 24),
-          ],
-        ),
-      ),
-    );
-  }
-
-  void _showError(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        backgroundColor: Colors.red,
-        duration: const Duration(seconds: 3),
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('قياس الملابس الذكي'),
-        centerTitle: true,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.info_outline),
-            onPressed: () {
-              showDialog(
-                context: context,
-                builder:
-                    (context) => AlertDialog(
-                      title: const Text('نصائح الاستخدام'),
-                      content: const SingleChildScrollView(
-                        child: Text(
-                          '1. قف بوضعية واضحة أمام الكاميرا\n'
-                          '2. تأكد من إضاءة جيدة\n'
-                          '3. ارتدِ ملابس ضيقة لتسهيل القياس\n'
-                          '4. أدخل طولك ووزنك بدقة\n'
-                          '5. حافظ على مسافة 2-3 متر من الكاميرا\n\n'
-                          '6. تجنب الخلفيات المزدحمة\n'
-                          '7. حافظ على استقامة ظهرك\n'
-                          '8. تأكد من ظهور كامل جسمك في الإطار',
-                        ),
-                      ),
-                      actions: [
-                        TextButton(
-                          onPressed: () => Navigator.pop(context),
-                          child: const Text('حسناً'),
-                        ),
-                      ],
-                    ),
-              );
-            },
-          ),
-        ],
-      ),
-      body: SafeArea(
-        child: Column(
-          children: [
-            if (showInputFields) ...[
-              Expanded(child: _buildInputFields()),
-              Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: ElevatedButton(
-                  onPressed: () {
-                    setState(() {
-                      showInputFields = false;
-                    });
-                  },
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.blueAccent,
-                    minimumSize: const Size(double.infinity, 50),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                  ),
-                  child: const Text(
-                    'حفظ البيانات والمتابعة',
-                    style: TextStyle(fontSize: 18, color: Colors.white),
-                  ),
-                ),
-              ),
-            ] else ...[
-              Expanded(
-                flex: 3,
-                child: FutureBuilder<void>(
-                  future: _initializeControllerFuture,
-                  builder: (context, snapshot) {
-                    if (snapshot.connectionState == ConnectionState.done) {
-                      return LayoutBuilder(
-                        builder: (context, constraints) {
-                          double width = constraints.maxWidth;
-                          double height = width * 4 / 3;
-
-                          if (height > constraints.maxHeight) {
-                            height = constraints.maxHeight;
-                            width = height * 3 / 4;
-                          }
-
-                          return Center(
-                            child: SizedBox(
-                              width: width,
-                              height: height,
-                              child: Stack(
-                                children: [
-                                  CameraPreview(_controller),
-                                  if (poses != null && poses!.isNotEmpty)
-                                    CustomPaint(
-                                      painter: PosePainter(poses!.first),
-                                      size: Size(width, height),
-                                    ),
-                                ],
-                              ),
-                            ),
-                          );
-                        },
-                      );
-                    } else {
-                      return const Center(child: CircularProgressIndicator());
-                    }
-                  },
-                ),
-              ),
-              Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 8,
-                ),
-                child: ElevatedButton.icon(
-                  onPressed:
-                      isProcessing
-                          ? null
-                          : () async {
-                            try {
-                              await _initializeControllerFuture;
-                              final image = await _controller.takePicture();
-                              await _processImage(image);
-                            } catch (e) {
-                              debugPrint('Error: $e');
-                            }
-                          },
-                  icon: const Icon(Icons.camera_alt),
-                  label: Text(
-                    isProcessing
-                        ? 'جاري المعالجة...'
-                        : 'التقط صورة لقياس المقاسات',
-                    style: const TextStyle(fontSize: 16),
-                  ),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.blueAccent,
-                    minimumSize: const Size(double.infinity, 50),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                  ),
-                ),
-              ),
-              Expanded(
-                flex: 2,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(vertical: 8),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: const BorderRadius.vertical(
-                      top: Radius.circular(20),
-                    ),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withOpacity(0.1),
-                        blurRadius: 10,
-                        offset: const Offset(0, -5),
-                      ),
-                    ],
-                  ),
-                  child: _buildSizeInfo(),
-                ),
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class PosePainter extends CustomPainter {
-  final Pose pose;
-
-  PosePainter(this.pose);
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint =
-        Paint()
-          ..color = Colors.green
-          ..strokeWidth = 4.0
-          ..style = PaintingStyle.stroke;
-
-    for (final landmark in pose.landmarks) {
-      canvas.drawCircle(
-        Offset(landmark.x * size.width, landmark.y * size.height),
-        4.0,
-        paint,
-      );
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) {
-    return true;
   }
 }

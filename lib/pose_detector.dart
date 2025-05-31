@@ -2,6 +2,8 @@ import 'dart:io';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as path;
+import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart'
+    as mlkit;
 
 enum PoseLandmarkType {
   nose,
@@ -40,24 +42,15 @@ enum PoseLandmarkType {
 }
 
 class PoseDetector {
-  static const String MODEL_FILE = 'pose_landmarker_full.task';
   bool _isInitialized = false;
-  late String _modelPath;
+  late final mlkit.PoseDetector _mlkitPoseDetector;
 
   Future<void> initialize() async {
     if (_isInitialized) return;
 
     try {
-      final tempDir = await getTemporaryDirectory();
-      _modelPath = path.join(tempDir.path, MODEL_FILE);
-
-      // Copy model file from assets to temporary directory if it doesn't exist
-      if (!File(_modelPath).existsSync()) {
-        final ByteData data = await rootBundle.load('assets/$MODEL_FILE');
-        final bytes = data.buffer.asUint8List();
-        await File(_modelPath).writeAsBytes(bytes);
-      }
-
+      final options = mlkit.PoseDetectorOptions();
+      _mlkitPoseDetector = mlkit.PoseDetector(options: options);
       _isInitialized = true;
     } catch (e) {
       throw Exception('Failed to initialize pose detector: $e');
@@ -70,30 +63,112 @@ class PoseDetector {
     }
 
     try {
-      // Here we would normally call the MediaPipe pose detection
-      // For now, we'll return a mock result with all landmarks
-      final landmarks = <Map<String, dynamic>>[];
+      final inputImage = mlkit.InputImage.fromFile(File(imagePath));
+      final poses = await _mlkitPoseDetector.processImage(inputImage);
 
-      for (var type in PoseLandmarkType.values) {
-        landmarks.add({
-          'type': type.index,
-          'x': 0.5,
-          'y': 0.5,
-          'z': 0.0,
-          'visibility': 0.9,
-        });
+      if (poses.isEmpty) {
+        return [];
       }
 
-      return [
-        {'landmarks': landmarks, 'score': 0.95},
-      ];
+      return poses.map((pose) {
+        final landmarks = <Map<String, dynamic>>[];
+
+        for (final landmark in pose.landmarks.entries) {
+          landmarks.add({
+            'type': _getPoseLandmarkTypeIndex(landmark.key),
+            'x': landmark.value.x,
+            'y': landmark.value.y,
+            'z': landmark.value.z,
+            'likelihood': landmark.value.likelihood,
+          });
+        }
+
+        return {
+          'landmarks': landmarks,
+          'score': 1.0, // ML Kit doesn't provide an overall score
+        };
+      }).toList();
     } catch (e) {
       throw Exception('Failed to detect pose: $e');
     }
   }
 
+  int _getPoseLandmarkTypeIndex(mlkit.PoseLandmarkType mlkitType) {
+    switch (mlkitType) {
+      case mlkit.PoseLandmarkType.nose:
+        return PoseLandmarkType.nose.index;
+      case mlkit.PoseLandmarkType.leftEyeInner:
+        return PoseLandmarkType.leftEyeInner.index;
+      case mlkit.PoseLandmarkType.leftEye:
+        return PoseLandmarkType.leftEye.index;
+      case mlkit.PoseLandmarkType.leftEyeOuter:
+        return PoseLandmarkType.leftEyeOuter.index;
+      case mlkit.PoseLandmarkType.rightEyeInner:
+        return PoseLandmarkType.rightEyeInner.index;
+      case mlkit.PoseLandmarkType.rightEye:
+        return PoseLandmarkType.rightEye.index;
+      case mlkit.PoseLandmarkType.rightEyeOuter:
+        return PoseLandmarkType.rightEyeOuter.index;
+      case mlkit.PoseLandmarkType.leftEar:
+        return PoseLandmarkType.leftEar.index;
+      case mlkit.PoseLandmarkType.rightEar:
+        return PoseLandmarkType.rightEar.index;
+      case mlkit.PoseLandmarkType.leftMouth:
+        return PoseLandmarkType.mouthLeft.index;
+      case mlkit.PoseLandmarkType.rightMouth:
+        return PoseLandmarkType.mouthRight.index;
+      case mlkit.PoseLandmarkType.leftShoulder:
+        return PoseLandmarkType.leftShoulder.index;
+      case mlkit.PoseLandmarkType.rightShoulder:
+        return PoseLandmarkType.rightShoulder.index;
+      case mlkit.PoseLandmarkType.leftElbow:
+        return PoseLandmarkType.leftElbow.index;
+      case mlkit.PoseLandmarkType.rightElbow:
+        return PoseLandmarkType.rightElbow.index;
+      case mlkit.PoseLandmarkType.leftWrist:
+        return PoseLandmarkType.leftWrist.index;
+      case mlkit.PoseLandmarkType.rightWrist:
+        return PoseLandmarkType.rightWrist.index;
+      case mlkit.PoseLandmarkType.leftPinky:
+        return PoseLandmarkType.leftPinky.index;
+      case mlkit.PoseLandmarkType.rightPinky:
+        return PoseLandmarkType.rightPinky.index;
+      case mlkit.PoseLandmarkType.leftIndex:
+        return PoseLandmarkType.leftIndex.index;
+      case mlkit.PoseLandmarkType.rightIndex:
+        return PoseLandmarkType.rightIndex.index;
+      case mlkit.PoseLandmarkType.leftThumb:
+        return PoseLandmarkType.leftThumb.index;
+      case mlkit.PoseLandmarkType.rightThumb:
+        return PoseLandmarkType.rightThumb.index;
+      case mlkit.PoseLandmarkType.leftHip:
+        return PoseLandmarkType.leftHip.index;
+      case mlkit.PoseLandmarkType.rightHip:
+        return PoseLandmarkType.rightHip.index;
+      case mlkit.PoseLandmarkType.leftKnee:
+        return PoseLandmarkType.leftKnee.index;
+      case mlkit.PoseLandmarkType.rightKnee:
+        return PoseLandmarkType.rightKnee.index;
+      case mlkit.PoseLandmarkType.leftAnkle:
+        return PoseLandmarkType.leftAnkle.index;
+      case mlkit.PoseLandmarkType.rightAnkle:
+        return PoseLandmarkType.rightAnkle.index;
+      case mlkit.PoseLandmarkType.leftHeel:
+        return PoseLandmarkType.leftHeel.index;
+      case mlkit.PoseLandmarkType.rightHeel:
+        return PoseLandmarkType.rightHeel.index;
+      case mlkit.PoseLandmarkType.leftFootIndex:
+        return PoseLandmarkType.leftFootIndex.index;
+      case mlkit.PoseLandmarkType.rightFootIndex:
+        return PoseLandmarkType.rightFootIndex.index;
+    }
+  }
+
   void close() {
-    _isInitialized = false;
+    if (_isInitialized) {
+      _mlkitPoseDetector.close();
+      _isInitialized = false;
+    }
   }
 }
 
@@ -118,7 +193,7 @@ class PoseLandmark {
       x: json['x'] as double,
       y: json['y'] as double,
       z: json['z'] as double,
-      visibility: json['visibility'] as double,
+      visibility: json['likelihood'] as double,
     );
   }
 }
